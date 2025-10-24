@@ -1,19 +1,27 @@
+import os
+import numpy as np
 import joblib
-from sklearn.model_selection import train_test_split, cross_val_score
+
+from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
-import numpy as np
+from sklearn.metrics import classification_report, accuracy_score
+
+from scipy.sparse import issparse
 
 
-def train_sentiment_model(df, use_cross_validation=True, create_visualizations=True):
-    # Map sentiment labels to numeric values
-    # CLASS column contains: "Positive", "Neutral", "Negative"
+# =====================================================
+# 1️⃣ Classical TF-IDF + Logistic Regression
+# =====================================================
+def train_classical_model(df, limit=10000):
+    print("\n🧩 Training Classical TF-IDF + Logistic Regression Model...")
+
+    # Limit dataset for faster training
+    df = df.sample(min(limit, len(df)), random_state=42)
+
     df["label"] = df["CLASS"].map({"Positive": 2, "Neutral": 1, "Negative": 0})
-
-    # Drop any rows with unmapped labels
-    df = df.dropna(subset=['label'])
-    df['label'] = df['label'].astype(int)
+    df = df.dropna(subset=["label"])
+    df["label"] = df["label"].astype(int)
 
     X_train, X_test, y_train, y_test = train_test_split(
         df["cleaned_text"], df["label"], test_size=0.2, random_state=42
@@ -24,78 +32,224 @@ def train_sentiment_model(df, use_cross_validation=True, create_visualizations=T
     X_test_vec = vectorizer.transform(X_test)
 
     model = LogisticRegression(max_iter=300)
-
-    # Cross-validation before final training
-    cv_scores = None
-    if use_cross_validation:
-        print("\n🔄 Performing 5-Fold Cross-Validation...")
-        cv_scores = cross_val_score(
-            model, X_train_vec, y_train, cv=5, scoring="accuracy"
-        )
-        print(f"   Cross-Validation Scores: {cv_scores}")
-        print(
-            f"   Mean CV Accuracy: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})"
-        )
-
-    # Train final model on full training set
     model.fit(X_train_vec, y_train)
 
-    # Evaluate the model
     y_pred = model.predict(X_test_vec)
-    accuracy = accuracy_score(y_test, y_pred)
+    acc = accuracy_score(y_test, y_pred)
 
-    print("\n" + "=" * 60)
-    print("📊 SENTIMENT MODEL EVALUATION METRICS")
+    print("\n📊 CLASSICAL MODEL EVALUATION")
     print("=" * 60)
-    print(f"\n🎯 Accuracy: {accuracy:.4f} ({accuracy * 100:.2f}%)")
-    print("\n📋 Classification Report:")
+    print(f"🎯 Accuracy: {acc:.4f}")
     print(
         classification_report(
             y_test, y_pred, target_names=["Negative", "Neutral", "Positive"]
         )
     )
-    print("\n🔢 Confusion Matrix:")
-    print(confusion_matrix(y_test, y_pred))
-    print("=" * 60 + "\n")
+    print("=" * 60)
 
-    # Create visualizations
-    if create_visualizations:
-        try:
-            from src.metrics_visualization import create_all_visualizations
-
-            create_all_visualizations(
-                y_test,
-                y_pred,
-                labels=["Negative", "Neutral", "Positive"],
-                cv_scores=cv_scores,
-                model_name="Sentiment",
-            )
-        except ImportError:
-            print("⚠️  Matplotlib not available. Skipping visualizations.")
-            print("   Install with: pip install matplotlib seaborn")
-
-    joblib.dump(model, "models/sentiment_model.pkl")
-    joblib.dump(vectorizer, "models/sentiment_vectorizer.pkl")
-
-    print("✅ Sentiment model trained and saved successfully.")
-
-
-def predict_sentiment(text: str, return_confidence=False):
+    # Create visualizations for classical model
     try:
-        model = joblib.load("models/sentiment_model.pkl")
-        vectorizer = joblib.load("models/sentiment_vectorizer.pkl")
-    except FileNotFoundError:
-        raise FileNotFoundError(
-            "Sentiment model not found. Please train the model first using train_models.py"
+        from src.metrics_visualization import create_all_visualizations
+
+        create_all_visualizations(
+            y_true=y_test,
+            y_pred=y_pred,
+            labels=["Negative", "Neutral", "Positive"],
+            cv_scores=None,
+            model_name="Sentiment Classical",
+        )
+    except Exception:
+        pass
+
+    os.makedirs("models/sentiment/classical", exist_ok=True)
+    joblib.dump(model, "models/sentiment/classical/sentiment_model.pkl")
+    joblib.dump(vectorizer, "models/sentiment/classical/sentiment_vectorizer.pkl")
+
+    print("✅ Classical model saved to models/sentiment/classical/")
+    return model, vectorizer, X_test, y_test, X_test_vec
+
+
+# =====================================================
+# 2️⃣ Transformer Model (DistilBERT)
+# =====================================================
+def train_transformer_model(*args, **kwargs):
+    raise RuntimeError(
+        "Transformer models have been removed from this project.\n"
+        "If you need transformer support, reintroduce the transformers dependency and re-implement `train_transformer_model`."
+    )
+
+
+# =====================================================
+# 3️⃣ Ensemble Model
+# =====================================================
+def train_ensemble_model(df, limit=10000):
+    print(
+        "\n🧠 Training Ensemble Model (TF-IDF + Logistic Regression + Transformer Outputs)..."
+    )
+
+    # First train classical model
+    classical_model, vectorizer, X_test_texts, y_test, X_test_vec = (
+        train_classical_model(df, limit=limit)
+    )
+
+    # Transformer models removed: proceed using classical TF-IDF features only.
+    transformer_features = None
+
+    # Combine classical + transformer outputs: safely convert sparse matrix to numpy
+    if issparse(X_test_vec):
+        # Use todense() + np.asarray() to get a numpy array (avoids static type issues with toarray)
+        classical_arr = np.asarray(X_test_vec.todense())
+    elif hasattr(X_test_vec, "todense"):
+        classical_arr = np.asarray(X_test_vec.todense())
+    else:
+        classical_arr = np.asarray(X_test_vec)
+
+    # If transformer features were available we'd concatenate them. Since transformers
+    # are removed from this project we fall back to classical TF-IDF features only.
+    if transformer_features:
+        X_ensemble = np.hstack([classical_arr, transformer_features])
+    else:
+        X_ensemble = classical_arr
+
+    # Train ensemble logistic regression
+    ensemble_model = LogisticRegression(max_iter=300)
+    ensemble_model.fit(X_ensemble, y_test)
+
+    y_pred = ensemble_model.predict(X_ensemble)
+    acc = accuracy_score(y_test, y_pred)
+
+    print("\n📊 ENSEMBLE MODEL EVALUATION")
+    print("=" * 60)
+    print(f"🎯 Accuracy: {acc:.4f}")
+    print(
+        classification_report(
+            y_test, y_pred, target_names=["Negative", "Neutral", "Positive"]
+        )
+    )
+    print("=" * 60)
+
+    # Visualizations for ensemble model
+    try:
+        from src.metrics_visualization import create_all_visualizations
+
+        create_all_visualizations(
+            y_true=y_test,
+            y_pred=y_pred,
+            labels=["Negative", "Neutral", "Positive"],
+            cv_scores=None,
+            model_name="Sentiment Ensemble",
+        )
+    except Exception:
+        pass
+
+    os.makedirs("models/sentiment/ensemble", exist_ok=True)
+    joblib.dump(ensemble_model, "models/sentiment/ensemble/ensemble_model.pkl")
+    print("✅ Ensemble model saved to models/sentiment/ensemble/")
+
+    return ensemble_model
+
+
+# =====================================================
+# 4️⃣ Run All
+# =====================================================
+def train_all_sentiment_models(df):
+    os.makedirs("models", exist_ok=True)
+
+    print(
+        "\n🚀 Starting Full Sentiment Model Training Pipeline (max 10,000 samples)..."
+    )
+
+    train_classical_model(df)
+    # Transformer training removed from project
+    train_ensemble_model(df)
+
+    print("\n\u2705 All models trained and saved successfully!")
+
+
+def predict_sentiment(
+    text: str, model_type: str = "classical", return_confidence: bool = False
+):
+    """Predict sentiment for a single text using the specified model.
+
+    Args:
+        text: Input text to classify
+        model_type: Either "classical" or "ensemble"
+        return_confidence: If True, returns (label, confidence) tuple
+
+    Returns:
+        label or (label, confidence) when return_confidence=True.
+    """
+    # Import locally to avoid import-time overhead and circular imports
+    try:
+        from .data_process import clean_text
+    except Exception:
+        try:
+            from data_process import clean_text
+        except Exception:
+            raise ImportError(
+                "Could not import data_process.clean_text. Ensure src is on PYTHONPATH."
+            )
+
+    # Validate model_type
+    if model_type not in ["classical", "ensemble"]:
+        raise ValueError(
+            f"model_type must be 'classical' or 'ensemble', got '{model_type}'"
         )
 
-    vec = vectorizer.transform([text])
-    pred = model.predict(vec)[0]
-    result = {0: "Negative", 1: "Neutral", 2: "Positive"}[pred]
+    # Paths for classical model (always needed for vectorization)
+    classical_model_path = "models/sentiment/classical/sentiment_model.pkl"
+    vec_path = "models/sentiment/classical/sentiment_vectorizer.pkl"
+
+    if not (os.path.exists(classical_model_path) and os.path.exists(vec_path)):
+        raise FileNotFoundError(
+            "Saved classical sentiment model/vectorizer not found. Run training first."
+        )
+
+    vectorizer = joblib.load(vec_path)
+
+    # Clean and vectorize text
+    cleaned = clean_text(
+        text, keep_emojis=True, remove_stopwords=True, use_lemmatization=True
+    )
+    X = vectorizer.transform([cleaned])
+
+    # Load appropriate model
+    if model_type == "ensemble":
+        ensemble_model_path = "models/sentiment/ensemble/ensemble_model.pkl"
+        if not os.path.exists(ensemble_model_path):
+            raise FileNotFoundError(
+                "Saved ensemble sentiment model not found. Run training first."
+            )
+        model = joblib.load(ensemble_model_path)
+
+        # Convert sparse to dense for ensemble
+        from scipy.sparse import issparse
+
+        if issparse(X):
+            X = np.asarray(X.todense())
+        else:
+            X = np.asarray(X)
+    else:
+        model = joblib.load(classical_model_path)
+
+    # Make prediction
+    if hasattr(model, "predict_proba"):
+        probs = model.predict_proba(X)[0]
+        idx = int(np.argmax(probs))
+        confidence = float(probs[idx])
+    else:
+        idx = int(model.predict(X)[0])
+        confidence = 1.0
+
+    labels = ["Negative", "Neutral", "Positive"]
+    label = labels[idx] if idx < len(labels) else str(idx)
 
     if return_confidence:
-        proba = model.predict_proba(vec)[0]
-        confidence = float(np.max(proba) * 100)
-        return result, confidence
+        return label, confidence
+    return label
 
-    return result
+
+# Example:
+# if __name__ == "__main__":
+#     df = pd.read_csv("data/cleaned_sentiment.csv")  # must have 'cleaned_text' and 'CLASS' columns
+#     train_all_sentiment_models(df)

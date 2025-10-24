@@ -5,9 +5,10 @@ Creates visual charts and plots for model evaluation metrics.
 
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, classification_report
 import numpy as np
 import os
+import json
 
 
 def plot_confusion_matrix(y_true, y_pred, labels, title, save_path=None):
@@ -217,6 +218,29 @@ def create_all_visualizations(y_true, y_pred, labels, cv_scores, model_name):
             title=f"{model_name} Model - Cross-Validation Scores",
             save_path=f"{viz_dir}/{model_name.lower()}_cv_scores.png",
         )
+
+    # Classification metrics (precision/recall/f1)
+    try:
+        report_dict = classification_report(
+            y_true, y_pred, target_names=labels, output_dict=True
+        )
+        # Save the classification report dict to JSON for downstream display in the app
+        try:
+            report_path = f"{viz_dir}/{model_name.lower()}_classification_report.json"
+            with open(report_path, "w", encoding="utf-8") as fh:
+                json.dump(report_dict, fh, indent=2)
+            print(f"✅ Classification report saved to: {report_path}")
+        except Exception:
+            pass
+
+        plot_classification_metrics(
+            report_dict,
+            title=f"{model_name} Model - Classification Metrics",
+            save_path=f"{viz_dir}/{model_name.lower()}_classification_metrics.png",
+        )
+    except Exception:
+        # If target_names mismatch or error occurs, skip metric plot
+        pass
 
     print(f"✅ All visualizations saved to '{viz_dir}/' directory\n")
 

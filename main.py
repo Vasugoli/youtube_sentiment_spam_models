@@ -29,17 +29,107 @@ def predict(text: str, model_type: str):
         sys.exit(1)
 
     if model_type == "sentiment":
-        from src.sentiment_model import predict_sentiment
+        try:
+            from src import sentiment_model
+        except Exception:
+            try:
+                import importlib
 
-        result, confidence = predict_sentiment(text, return_confidence=True)
+                sentiment_model = importlib.import_module("src.sentiment_model")
+            except Exception:
+                print("❌ Could not import 'src.sentiment_model'. Make sure the module exists and is on PYTHONPATH.")
+                sys.exit(1)
+
+        # support different possible function names in the module
+        predict_fn = getattr(sentiment_model, "predict_sentiment", None) or getattr(
+            sentiment_model, "predict", None
+        )
+        if not callable(predict_fn):
+            print(
+                "❌ 'predict_sentiment' function not found in src.sentiment_model (tried 'predict_sentiment' and 'predict')"
+            )
+            sys.exit(1)
+
+        # Call prediction and handle multiple possible return formats safely
+        result = None
+        confidence = None
+        output = predict_fn(text, return_confidence=True)
+
+        # Handle tuple/list returns like (result, confidence)
+        if isinstance(output, (list, tuple)) and len(output) >= 2:
+            result, confidence = output[0], output[1]
+        # Handle dict-like returns
+        elif isinstance(output, dict):
+            result = output.get("result") or output.get("label") or output.get("prediction") or output.get("y")
+            confidence = output.get("confidence") or output.get("score") or output.get("prob") or output.get("probability")
+        else:
+            # Try attribute access for objects
+            result = getattr(output, "result", None) or getattr(output, "label", None) or getattr(output, "prediction", None)
+            confidence = getattr(output, "confidence", None) or getattr(output, "score", None) or getattr(output, "prob", None)
+
+        # If still no explicit result, treat the whole output as the result (single-value return)
+        if result is None:
+            result = output
+
+        # Normalize confidence to a numeric percentage for printing
+        try:
+            confidence_val = float(confidence) if confidence is not None else 0.0
+        except Exception:
+            confidence_val = 0.0
+
+        # If confidence looks like a probability (0-1), convert to percentage
+        if 0.0 <= confidence_val <= 1.0:
+            confidence_val *= 100.0
+
         print(f"\n📊 Sentiment: {result}")
-        print(f"🎯 Confidence: {confidence:.2f}%")
+        print(f"🎯 Confidence: {confidence_val:.2f}%")
     elif model_type == "spam":
-        from src.spam_model import predict_spam
+        try:
+            from src import spam_model
+        except Exception:
+            try:
+                import importlib
 
-        result, confidence = predict_spam(text, return_confidence=True)
+                spam_model = importlib.import_module("src.spam_model")
+            except Exception:
+                print("❌ Could not import 'src.spam_model'. Make sure the module exists and is on PYTHONPATH.")
+                sys.exit(1)
+
+        # support different possible function names in the module
+        predict_fn = getattr(spam_model, "predict_spam", None) or getattr(spam_model, "predict", None)
+        if not callable(predict_fn):
+            print("❌ 'predict_spam' function not found in src.spam_model (tried 'predict_spam' and 'predict')")
+            sys.exit(1)
+
+        # Call prediction and handle multiple possible return formats safely
+        result = None
+        confidence = None
+        output = predict_fn(text, return_confidence=True)
+
+        # Handle tuple/list returns like (result, confidence)
+        if isinstance(output, (list, tuple)) and len(output) >= 2:
+            result, confidence = output[0], output[1]
+        # Handle dict-like returns
+        elif isinstance(output, dict):
+            result = output.get("result") or output.get("label") or output.get("prediction") or output.get("y")
+            confidence = output.get("confidence") or output.get("score") or output.get("prob") or output.get("probability")
+        else:
+            # Try attribute access for objects or fall back to single-value output
+            result = getattr(output, "result", None) or getattr(output, "label", None) or getattr(output, "prediction", None) or output
+            confidence = getattr(output, "confidence", None) or getattr(output, "score", None) or getattr(output, "prob", None)
+
+        # Normalize confidence to a numeric percentage for printing
+        try:
+            confidence_val = float(confidence) if confidence is not None else 0.0
+        except Exception:
+            confidence_val = 0.0
+
+        # If confidence looks like a probability (0-1), convert to percentage
+        if 0.0 <= confidence_val <= 1.0:
+            confidence_val *= 100.0
+
         print(f"\n📊 Classification: {result}")
-        print(f"🎯 Confidence: {confidence:.2f}%")
+        print(f"🎯 Confidence: {confidence_val:.2f}%")
     else:
         print("❌ Invalid model type. Use 'sentiment' or 'spam'")
         sys.exit(1)

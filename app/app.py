@@ -3,341 +3,648 @@ import os
 import sys
 import pandas as pd
 import io
+import json
 
-# Add parent directory to path so we can import from src
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Add parent directory to path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.sentiment_model import predict_sentiment
 from src.spam_model import predict_spam
+
+# ---------- CONSTANTS ----------
+MAX_COMMENT_LENGTH = 5000
+MAX_BATCH_SIZE = 10000
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
     page_title="YouTube Comment Classifier 🎥",
     page_icon="🎯",
-    layout="centered",
-    initial_sidebar_state="collapsed",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 # ---------- CUSTOM CSS ----------
 st.markdown(
     """
     <style>
-    body {
-        background-color: #f7f9fc;
-        color: #333333;
-        font-family: "Segoe UI", sans-serif;
-    }
     .main-title {
         text-align: center;
-        font-size: 2.5rem;
+        font-size: 2.8rem;
         color: #2b6cb0;
         font-weight: bold;
         margin-bottom: 0.5rem;
     }
     .sub-title {
         text-align: center;
-        font-size: 1.1rem;
+        font-size: 1.2rem;
         color: #4a5568;
-        margin-bottom: 1.5rem;
+        margin-bottom: 2rem;
     }
-    .stTextArea textarea {
-        border-radius: 12px;
-        border: 1px solid #a0aec0;
-        padding: 0.75rem;
+    .model-card {
+        padding: 1.5rem;
+        border-radius: 10px;
+        border: 2px solid #e2e8f0;
+        background-color: #f7fafc;
+        margin-bottom: 1rem;
     }
-    .stButton>button {
-        background-color: #2b6cb0;
+    .comparison-header {
+        background: linear-gradient(90deg, #2b6cb0 0%, #3182ce 100%);
         color: white;
+        padding: 1rem;
         border-radius: 8px;
-        font-size: 1rem;
-        padding: 0.6rem 1.5rem;
-        transition: all 0.3s ease;
-    }
-    .stButton>button:hover {
-        background-color: #2c5282;
-        transform: scale(1.03);
-    }
-    .footer {
         text-align: center;
-        margin-top: 3rem;
-        color: #718096;
-        font-size: 0.9rem;
+        margin-bottom: 1.5rem;
     }
     </style>
 """,
     unsafe_allow_html=True,
 )
 
+
+# ---------- HELPER FUNCTIONS ----------
+@st.cache_resource
+def get_model_cache():
+    """Cache to store loaded models to avoid reloading"""
+    return {}
+
+
+def load_model_with_fallback(model_path, vectorizer_path):
+    """Try to load a model and return success status"""
+    return os.path.exists(model_path) and os.path.exists(vectorizer_path)
+
+
+def get_available_models():
+    """Scan models directory and return available models"""
+    models = {
+        "spam": {"classical": False, "ensemble": False},
+        "sentiment": {"classical": False, "ensemble": False},
+    }
+
+    # Check spam models
+    models["spam"]["classical"] = load_model_with_fallback(
+        "models/spam/classical/spam_model.pkl",
+        "models/spam/classical/spam_vectorizer.pkl",
+    )
+    models["spam"]["ensemble"] = os.path.exists(
+        "models/spam/ensemble/ensemble_model.pkl"
+    )
+
+    # Check sentiment models
+    models["sentiment"]["classical"] = load_model_with_fallback(
+        "models/sentiment/classical/sentiment_model.pkl",
+        "models/sentiment/classical/sentiment_vectorizer.pkl",
+    )
+    models["sentiment"]["ensemble"] = os.path.exists(
+        "models/sentiment/ensemble/ensemble_model.pkl"
+    )
+
+    return models
+
+
+def predict_with_model(comment, model_type, model_category):
+    """Make prediction with specified model"""
+    try:
+        if model_category == "spam":
+            result, confidence = predict_spam(
+                comment, model_type=model_type, return_confidence=True
+            )
+        else:
+            result, confidence = predict_sentiment(
+                comment, model_type=model_type, return_confidence=True
+            )
+        return result, float(confidence) * 100
+    except FileNotFoundError as e:
+        st.error(f"❌ Model files not found: {str(e)}")
+        return "Error: Model not found", 0.0
+    except ValueError as e:
+        st.error(f"❌ Invalid input: {str(e)}")
+        return "Error: Invalid input", 0.0
+    except Exception as e:
+        st.error(f"❌ Prediction error: {str(e)}")
+        return "Error", 0.0
+
+
 # ---------- APP HEADER ----------
 st.markdown(
-    "<h1 class='main-title'>🎯 YouTube Comment Classification App</h1>",
+    "<h1 class='main-title'>🎯 YouTube Comment Analysis Platform</h1>",
     unsafe_allow_html=True,
 )
 st.markdown(
-    "<p class='sub-title'>Analyze YouTube comments to detect spam or determine sentiment using ML models</p>",
+    "<p class='sub-title'>Advanced ML-powered comment classification with multi-model comparison</p>",
     unsafe_allow_html=True,
 )
 
-# ---------- MODE SELECTION ----------
-st.divider()
-mode = st.radio(
-    "📋 Select Analysis Mode:",
-    ["Single Comment", "Batch Processing (CSV)"],
-    horizontal=True,
+# ---------- SIDEBAR: MODEL STATUS ----------
+with st.sidebar:
+    st.header("📊 Model Status")
+    available_models = get_available_models()
+
+    st.subheader("🚫 Spam Detection")
+    col1, col2 = st.columns(2)
+    with col1:
+        status_classical_spam = "✅" if available_models["spam"]["classical"] else "❌"
+        st.metric("Classical", status_classical_spam)
+    with col2:
+        status_ensemble_spam = "✅" if available_models["spam"]["ensemble"] else "❌"
+        st.metric("Ensemble", status_ensemble_spam)
+
+    st.subheader("💬 Sentiment Analysis")
+    col1, col2 = st.columns(2)
+    with col1:
+        status_classical_sent = (
+            "✅" if available_models["sentiment"]["classical"] else "❌"
+        )
+        st.metric("Classical", status_classical_sent)
+    with col2:
+        status_ensemble_sent = (
+            "✅" if available_models["sentiment"]["ensemble"] else "❌"
+        )
+        st.metric("Ensemble", status_ensemble_sent)
+
+    st.divider()
+    st.info("💡 Train models with: `python src/train_models.py`")
+
+# ---------- MAIN TABS ----------
+tab1, tab2, tab3, tab4 = st.tabs(
+    [
+        "🔍 Single Comment Analysis",
+        "⚖️ Model Comparison",
+        "📊 Batch Processing",
+        "📈 Model Performance",
+    ]
 )
-st.divider()
 
-# ========== SINGLE COMMENT MODE ==========
-if mode == "Single Comment":
-    # ---------- USER INPUT ----------
-    comment = st.text_area(
+# ========== TAB 1: SINGLE COMMENT ANALYSIS ==========
+with tab1:
+    st.header("🔍 Analyze Single Comment")
+
+    comment_input = st.text_area(
         "💬 Enter a YouTube comment:",
-        height=120,
+        height=150,
         placeholder="Type or paste a comment here...",
+        key="single_comment",
     )
 
-    # ---------- MODEL SELECTION ----------
-    model_choice = st.selectbox(
-        "🧠 Choose Model Type:",
-        ["Select Model", "Spam Detection", "Sentiment Analysis"],
-    )
+    col1, col2 = st.columns(2)
+    with col1:
+        analysis_type = st.selectbox(
+            "📋 Analysis Type:", ["Spam Detection", "Sentiment Analysis"]
+        )
+    with col2:
+        model_type = st.selectbox(
+            "🧠 Model Type:", ["Classical", "Ensemble", "Both (Compare)"]
+        )
 
-    # ---------- PREDICT BUTTON ----------
-    if st.button("🔍 Analyze Comment"):
-        if not comment.strip():
+    if st.button("🚀 Analyze", type="primary", use_container_width=True):
+        if not comment_input.strip():
             st.warning("⚠️ Please enter a comment before analysis.")
-        elif model_choice == "Select Model":
-            st.warning("⚠️ Please select a model.")
+        elif len(comment_input) > MAX_COMMENT_LENGTH:
+            st.warning(
+                f"⚠️ Comment too long. Maximum {MAX_COMMENT_LENGTH} characters allowed."
+            )
         else:
-            # Check if models exist
-            models_exist = True
-            if model_choice == "Spam Detection":
-                if not os.path.exists("models/spam_model.pkl") or not os.path.exists(
-                    "models/spam_vectorizer.pkl"
-                ):
-                    models_exist = False
-                    st.error(
-                        "❌ Spam detection model not found! Please train the models first by running: `python src/train_models.py`"
-                    )
-            elif model_choice == "Sentiment Analysis":
-                if not os.path.exists(
-                    "models/sentiment_model.pkl"
-                ) or not os.path.exists("models/sentiment_vectorizer.pkl"):
-                    models_exist = False
-                    st.error(
-                        "❌ Sentiment analysis model not found! Please train the models first by running: `python src/train_models.py`"
-                    )
+            model_category = (
+                "spam" if analysis_type == "Spam Detection" else "sentiment"
+            )
 
-            if models_exist:
-                try:
-                    with st.spinner("Analyzing comment... ⏳"):
-                        if model_choice == "Spam Detection":
-                            result, confidence = predict_spam(
-                                comment, return_confidence=True
-                            )
-                            st.metric(
-                                label="🚫 Spam Detection Result",
-                                value=result,
-                                delta="Spam" if result == "Spam" else "Not Spam",
-                                delta_color="inverse" if result == "Spam" else "normal",
-                            )
-                            st.progress(float(confidence) / 100)
-                            st.caption(f"Confidence: {confidence:.2f}%")
+            with st.spinner("🔄 Analyzing..."):
+                if model_type == "Both (Compare)":
+                    # Compare both models
+                    col1, col2 = st.columns(2)
 
-                        elif model_choice == "Sentiment Analysis":
-                            result, confidence = predict_sentiment(
-                                comment, return_confidence=True
+                    with col1:
+                        st.markdown("### 🔵 Classical Model")
+                        if available_models[model_category]["classical"]:
+                            result, conf = predict_with_model(
+                                comment_input, "classical", model_category
                             )
-                            emoji = (
-                                "😊"
-                                if result == "Positive"
-                                else "😐"
-                                if result == "Neutral"
-                                else "😠"
-                            )
-                            st.metric(
-                                label="💬 Sentiment Result",
-                                value=f"{result} {emoji}",
-                                delta="User Sentiment",
-                                delta_color="off",
-                            )
-                            st.progress(float(confidence) / 100)
-                            st.caption(f"Confidence: {confidence:.2f}%")
-                except Exception as e:
-                    st.error(f"❌ An error occurred during prediction: {str(e)}")
-                    st.info(
-                        "💡 Try retraining the models or check the error message above."
-                    )
 
-# ========== BATCH PROCESSING MODE ==========
-else:
+                            if analysis_type == "Spam Detection":
+                                st.metric(
+                                    "Result",
+                                    result,
+                                    delta="Spam" if result == "Spam" else "Ham",
+                                )
+                            else:
+                                emoji = (
+                                    "😊"
+                                    if result == "Positive"
+                                    else "😐"
+                                    if result == "Neutral"
+                                    else "😠"
+                                )
+                                st.metric("Result", f"{result} {emoji}")
+
+                            st.progress(conf / 100)
+                            st.caption(f"Confidence: {conf:.2f}%")
+                        else:
+                            st.error("❌ Model not available")
+
+                    with col2:
+                        st.markdown("### 🟢 Ensemble Model")
+                        if available_models[model_category]["ensemble"]:
+                            result, conf = predict_with_model(
+                                comment_input, "ensemble", model_category
+                            )
+
+                            if analysis_type == "Spam Detection":
+                                st.metric(
+                                    "Result",
+                                    result,
+                                    delta="Spam" if result == "Spam" else "Ham",
+                                )
+                            else:
+                                emoji = (
+                                    "😊"
+                                    if result == "Positive"
+                                    else "😐"
+                                    if result == "Neutral"
+                                    else "😠"
+                                )
+                                st.metric("Result", f"{result} {emoji}")
+
+                            st.progress(conf / 100)
+                            st.caption(f"Confidence: {conf:.2f}%")
+                        else:
+                            st.error("❌ Model not available")
+                else:
+                    # Single model prediction
+                    model_key = model_type.lower()
+                    if available_models[model_category][model_key]:
+                        result, conf = predict_with_model(
+                            comment_input, model_key, model_category
+                        )
+
+                        st.success("✅ Analysis Complete!")
+
+                        col1, col2 = st.columns([2, 1])
+                        with col1:
+                            if analysis_type == "Spam Detection":
+                                st.metric(
+                                    "🚫 Spam Detection Result",
+                                    result,
+                                    delta="Spam" if result == "Spam" else "Ham",
+                                )
+                            else:
+                                emoji = (
+                                    "😊"
+                                    if result == "Positive"
+                                    else "😐"
+                                    if result == "Neutral"
+                                    else "😠"
+                                )
+                                st.metric("💬 Sentiment Result", f"{result} {emoji}")
+
+                        with col2:
+                            st.metric("Confidence Score", f"{conf:.2f}%")
+
+                        st.progress(conf / 100)
+                    else:
+                        st.error(
+                            f"❌ {model_type} model not available. Please train the model first."
+                        )
+
+# ========== TAB 2: MODEL COMPARISON ==========
+with tab2:
+    st.header("⚖️ Compare All Models")
     st.info(
-        "📤 Upload a CSV file with a 'comment' column to analyze multiple comments at once."
+        "📌 Test the same comment across all available models to compare their predictions"
     )
 
-    # ---------- MODEL SELECTION ----------
-    batch_model_choice = st.selectbox(
-        "🧠 Choose Model Type:",
-        ["Spam Detection", "Sentiment Analysis"],
-        key="batch_model",
+    comparison_comment = st.text_area(
+        "💬 Enter comment for comparison:",
+        height=120,
+        placeholder="Enter a comment to test across all models...",
+        key="comparison_comment",
     )
 
-    # Confidence threshold
+    comparison_type = st.radio(
+        "Select comparison type:",
+        ["Spam Detection Models", "Sentiment Analysis Models", "All Models"],
+        horizontal=True,
+    )
+
+    if st.button("🔍 Compare Models", type="primary", use_container_width=True):
+        if not comparison_comment.strip():
+            st.warning("⚠️ Please enter a comment for comparison.")
+        elif len(comparison_comment) > MAX_COMMENT_LENGTH:
+            st.warning(
+                f"⚠️ Comment too long. Maximum {MAX_COMMENT_LENGTH} characters allowed."
+            )
+        else:
+            st.markdown(
+                "<div class='comparison-header'><h3>📊 Model Comparison Results</h3></div>",
+                unsafe_allow_html=True,
+            )
+
+            comparison_data = []
+
+            with st.spinner("🔄 Running predictions across all models..."):
+                # Spam models comparison
+                if comparison_type in ["Spam Detection Models", "All Models"]:
+                    st.subheader("🚫 Spam Detection Comparison")
+
+                    cols = st.columns(2)
+                    for idx, (model_name, model_key) in enumerate(
+                        [("Classical", "classical"), ("Ensemble", "ensemble")]
+                    ):
+                        with cols[idx]:
+                            if available_models["spam"][model_key]:
+                                result, conf = predict_with_model(
+                                    comparison_comment, model_key, "spam"
+                                )
+                                st.markdown(f"**{model_name} Model**")
+                                st.metric("Prediction", result)
+                                st.progress(conf / 100)
+                                st.caption(f"Confidence: {conf:.2f}%")
+
+                                comparison_data.append(
+                                    {
+                                        "Model": f"Spam - {model_name}",
+                                        "Prediction": result,
+                                        "Confidence": f"{conf:.2f}%",
+                                    }
+                                )
+                            else:
+                                st.warning(f"❌ {model_name} not available")
+
+                # Sentiment models comparison
+                if comparison_type in ["Sentiment Analysis Models", "All Models"]:
+                    st.subheader("💬 Sentiment Analysis Comparison")
+
+                    cols = st.columns(2)
+                    for idx, (model_name, model_key) in enumerate(
+                        [("Classical", "classical"), ("Ensemble", "ensemble")]
+                    ):
+                        with cols[idx]:
+                            if available_models["sentiment"][model_key]:
+                                result, conf = predict_with_model(
+                                    comparison_comment, model_key, "sentiment"
+                                )
+                                emoji = (
+                                    "😊"
+                                    if result == "Positive"
+                                    else "😐"
+                                    if result == "Neutral"
+                                    else "😠"
+                                )
+                                st.markdown(f"**{model_name} Model**")
+                                st.metric("Prediction", f"{result} {emoji}")
+                                st.progress(conf / 100)
+                                st.caption(f"Confidence: {conf:.2f}%")
+
+                                comparison_data.append(
+                                    {
+                                        "Model": f"Sentiment - {model_name}",
+                                        "Prediction": result,
+                                        "Confidence": f"{conf:.2f}%",
+                                    }
+                                )
+                            else:
+                                st.warning(f"❌ {model_name} not available")
+
+            # Display comparison table
+            if comparison_data:
+                st.divider()
+                st.subheader("📋 Comparison Summary")
+                df_comparison = pd.DataFrame(comparison_data)
+                st.dataframe(df_comparison, use_container_width=True, hide_index=True)
+
+# ========== TAB 3: BATCH PROCESSING ==========
+with tab3:
+    st.header("📊 Batch Processing")
+    st.info("📤 Upload a CSV file with a 'comment' column to analyze multiple comments")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        batch_analysis_type = st.selectbox(
+            "Analysis Type:", ["Spam Detection", "Sentiment Analysis"], key="batch_type"
+        )
+    with col2:
+        batch_model_type = st.selectbox(
+            "Model Type:", ["Classical", "Ensemble"], key="batch_model"
+        )
+
     confidence_threshold = st.slider(
-        "⚠️ Confidence Threshold (flag uncertain predictions):",
-        min_value=0,
-        max_value=100,
-        value=70,
-        help="Predictions with confidence below this threshold will be flagged",
+        "⚠️ Confidence Threshold:",
+        0,
+        100,
+        70,
+        help="Flag predictions below this confidence level",
     )
 
-    # ---------- FILE UPLOAD ----------
-    uploaded_file = st.file_uploader(
-        "Choose a CSV file", type=["csv"], help="CSV must contain a 'comment' column"
-    )
+    uploaded_file = st.file_uploader("Choose CSV file", type=["csv"])
 
-    if uploaded_file is not None:
+    if uploaded_file:
         try:
-            # Read CSV
             df = pd.read_csv(uploaded_file)
 
-            # Validate CSV
             if "comment" not in df.columns:
                 st.error("❌ CSV must contain a 'comment' column!")
+            elif len(df) > MAX_BATCH_SIZE:
+                st.error(
+                    f"❌ Too many rows! Maximum {MAX_BATCH_SIZE} rows allowed. Your file has {len(df)} rows."
+                )
             else:
-                st.success(f"✅ Loaded {len(df)} comments from CSV")
+                st.success(f"✅ Loaded {len(df)} comments")
 
-                # Show preview
-                with st.expander("👀 Preview Data (first 5 rows)"):
-                    st.dataframe(df.head())
+                with st.expander("👀 Preview Data"):
+                    st.dataframe(df.head(10))
 
-                # ---------- PROCESS BUTTON ----------
-                if st.button("🚀 Process Batch"):
-                    # Check if models exist
-                    models_exist = True
-                    if batch_model_choice == "Spam Detection":
-                        if not os.path.exists("models/spam_model.pkl"):
-                            models_exist = False
-                            st.error("❌ Spam detection model not found!")
+                if st.button("🚀 Process Batch", type="primary"):
+                    model_category = (
+                        "spam"
+                        if batch_analysis_type == "Spam Detection"
+                        else "sentiment"
+                    )
+                    model_key = batch_model_type.lower()
+
+                    if not available_models[model_category][model_key]:
+                        st.error(f"❌ {batch_model_type} model not available!")
                     else:
-                        if not os.path.exists("models/sentiment_model.pkl"):
-                            models_exist = False
-                            st.error("❌ Sentiment analysis model not found!")
-
-                    if models_exist:
                         progress_bar = st.progress(0)
                         status_text = st.empty()
 
                         results = []
                         confidences = []
-                        uncertain_flags = []
+                        flags = []
 
-                        # Process each comment
-                        for idx, (_, row) in enumerate(df.iterrows()):
-                            comment_text = str(row["comment"])
-
-                            # Update progress
-                            progress = (idx + 1) / len(df)
+                        # Process comments one by one
+                        total = len(df)
+                        for i, (idx, row) in enumerate(df.iterrows()):
+                            progress = (i + 1) / total
                             progress_bar.progress(progress)
-                            status_text.text(
-                                f"Processing comment {idx + 1}/{len(df)}..."
+                            status_text.text(f"Processing {i + 1}/{total}...")
+
+                            comment = str(row["comment"])
+                            result, conf = predict_with_model(
+                                comment, model_key, model_category
                             )
 
-                            try:
-                                if batch_model_choice == "Spam Detection":
-                                    result, confidence = predict_spam(
-                                        comment_text, return_confidence=True
-                                    )
-                                else:
-                                    result, confidence = predict_sentiment(
-                                        comment_text, return_confidence=True
-                                    )
+                            results.append(result)
+                            confidences.append(conf)
+                            flags.append(
+                                "⚠️ Uncertain"
+                                if conf < confidence_threshold
+                                else "✅ Confident"
+                            )
 
-                                results.append(result)
-                                confidences.append(confidence)
-                                uncertain_flags.append(
-                                    "⚠️ Uncertain"
-                                    if float(confidence) < confidence_threshold
-                                    else "✅ Confident"
-                                )
-
-                            except Exception as e:
-                                results.append(f"Error: {str(e)}")
-                                confidences.append(0.0)
-                                uncertain_flags.append("❌ Error")
-
-                        # Add results to dataframe
                         df["prediction"] = results
-                        df["confidence"] = [float(c) if c else 0.0 for c in confidences]
-                        df["flag"] = uncertain_flags
+                        df["confidence"] = confidences
+                        df["flag"] = flags
 
-                        # Ensure confidence column is float type
-                        df["confidence"] = df["confidence"].astype(float)
-
+                        status_text.text("✅ Complete!")
                         progress_bar.progress(1.0)
-                        status_text.text("✅ Processing complete!")
 
-                        # ---------- STATISTICS ----------
-                        st.subheader("📊 Batch Analysis Statistics")
+                        # Statistics
+                        st.subheader("📊 Analysis Statistics")
+                        cols = st.columns(4)
 
-                        col1, col2, col3, col4 = st.columns(4)
-
-                        with col1:
-                            st.metric("Total Comments", len(df))
-
-                        with col2:
-                            avg_confidence = df["confidence"].mean()
-                            st.metric("Avg Confidence", f"{avg_confidence:.1f}%")
-
-                        with col3:
-                            uncertain_count = (
-                                df["confidence"] < confidence_threshold
-                            ).sum()
-                            st.metric("Uncertain", uncertain_count)
-
-                        with col4:
-                            if batch_model_choice == "Spam Detection":
+                        with cols[0]:
+                            st.metric("Total", len(df))
+                        with cols[1]:
+                            st.metric(
+                                "Avg Confidence", f"{df['confidence'].mean():.1f}%"
+                            )
+                        with cols[2]:
+                            uncertain = (df["confidence"] < confidence_threshold).sum()
+                            st.metric("Uncertain", uncertain)
+                        with cols[3]:
+                            if batch_analysis_type == "Spam Detection":
                                 spam_count = (df["prediction"] == "Spam").sum()
-                                st.metric("Spam Detected", spam_count)
+                                st.metric("Spam", spam_count)
                             else:
-                                positive_count = (df["prediction"] == "Positive").sum()
-                                st.metric("Positive", positive_count)
+                                positive = (df["prediction"] == "Positive").sum()
+                                st.metric("Positive", positive)
 
-                        # Distribution chart
-                        if batch_model_choice == "Sentiment Analysis":
-                            st.subheader("📈 Sentiment Distribution")
-                            sentiment_counts = df["prediction"].value_counts()
-                            st.bar_chart(sentiment_counts)
-                        else:
-                            st.subheader("📈 Spam vs Ham Distribution")
-                            spam_counts = df["prediction"].value_counts()
-                            st.bar_chart(spam_counts)
+                        # Charts
+                        st.subheader("📈 Distribution")
+                        dist_counts = df["prediction"].value_counts()
+                        st.bar_chart(dist_counts)
 
-                        # ---------- RESULTS TABLE ----------
-                        st.subheader("📋 Detailed Results")
+                        # Results table
+                        st.subheader("📋 Results")
                         st.dataframe(df, use_container_width=True, height=400)
 
-                        # ---------- DOWNLOAD BUTTON ----------
+                        # Download
                         csv_buffer = io.StringIO()
                         df.to_csv(csv_buffer, index=False)
-                        csv_data = csv_buffer.getvalue()
-
                         st.download_button(
-                            label="📥 Download Results as CSV",
-                            data=csv_data,
-                            file_name=f"{batch_model_choice.lower().replace(' ', '_')}_results.csv",
-                            mime="text/csv",
-                            help="Download the analysis results with predictions and confidence scores",
+                            "📥 Download Results",
+                            csv_buffer.getvalue(),
+                            f"results_{batch_analysis_type.lower()}.csv",
+                            "text/csv",
                         )
 
         except Exception as e:
-            st.error(f"❌ Error reading CSV file: {str(e)}")
-            st.info(
-                "💡 Make sure your CSV is properly formatted with a 'comment' column."
+            st.error(f"❌ Error: {str(e)}")
+
+# ========== TAB 4: MODEL PERFORMANCE ==========
+with tab4:
+    st.header("📈 Model Performance Metrics")
+
+    viz_dir = "visualizations"
+
+    def load_classification_report(model_label):
+        report_path = os.path.join(viz_dir, f"{model_label}_classification_report.json")
+        if os.path.exists(report_path):
+            try:
+                with open(report_path, "r") as f:
+                    return json.load(f)
+            except Exception:
+                return None
+        return None
+
+    def find_visualizations(model_label):
+        if not os.path.exists(viz_dir):
+            return []
+        files = []
+        for fname in os.listdir(viz_dir):
+            if fname.lower().startswith(model_label.lower()):
+                files.append(os.path.join(viz_dir, fname))
+        return sorted(files)
+
+    for category in ["spam", "sentiment"]:
+        st.subheader(
+            f"{'🚫 Spam' if category == 'spam' else '💬 Sentiment'} Models Performance"
+        )
+
+        comparison_rows = []
+
+        for model_type in ["classical", "ensemble"]:
+            if available_models[category][model_type]:
+                with st.expander(
+                    f"📊 {model_type.capitalize()} Model Details", expanded=True
+                ):
+                    model_label = f"{category} {model_type}"
+
+                    # Load metrics
+                    report = load_classification_report(model_label)
+
+                    if report:
+                        # Display accuracy
+                        accuracy = report.get("accuracy")
+                        if accuracy:
+                            col1, col2 = st.columns(2)
+                            col1.metric("Accuracy", f"{accuracy:.4f}")
+                            col2.metric("Percentage", f"{accuracy * 100:.2f}%")
+
+                        # Build metrics table
+                        metrics_data = []
+                        for class_name, metrics in report.items():
+                            if class_name not in [
+                                "accuracy",
+                                "macro avg",
+                                "weighted avg",
+                            ] and isinstance(metrics, dict):
+                                metrics_data.append(
+                                    {
+                                        "Class": class_name,
+                                        "Precision": f"{metrics.get('precision', 0):.4f}",
+                                        "Recall": f"{metrics.get('recall', 0):.4f}",
+                                        "F1-Score": f"{metrics.get('f1-score', 0):.4f}",
+                                        "Support": int(metrics.get("support", 0)),
+                                    }
+                                )
+
+                        if metrics_data:
+                            st.dataframe(
+                                pd.DataFrame(metrics_data),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+
+                        # Collect comparison data
+                        macro = report.get("macro avg", {})
+                        comparison_rows.append(
+                            {
+                                "Model": model_type.capitalize(),
+                                "Accuracy": f"{accuracy:.4f}" if accuracy else "N/A",
+                                "Macro F1": f"{macro.get('f1-score', 0):.4f}",
+                            }
+                        )
+
+                    # Display visualizations
+                    visuals = find_visualizations(model_label)
+                    if visuals:
+                        st.markdown("**📊 Visualizations**")
+                        cols = st.columns(min(3, len(visuals)))
+                        for i, img_path in enumerate(visuals):
+                            with cols[i % len(cols)]:
+                                st.image(img_path, use_container_width=True)
+
+        # Comparison table
+        if comparison_rows:
+            st.subheader(f"📊 {category.capitalize()} Models Comparison")
+            st.dataframe(
+                pd.DataFrame(comparison_rows), use_container_width=True, hide_index=True
             )
 
+        st.divider()
+
 # ---------- FOOTER ----------
+st.markdown("---")
 st.markdown(
-    "<p class='footer'>Built with ❤️ using Streamlit & scikit-learn | Project by Vasu Goli</p>",
+    "<p style='text-align: center; color: #718096;'>Built with ❤️ using Streamlit & scikit-learn | Project by Vasu Goli</p>",
     unsafe_allow_html=True,
 )
